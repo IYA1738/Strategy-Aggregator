@@ -1,8 +1,18 @@
 //SPDX-License-Identifier:MIT
 pragma solidity >=0.8.0 <0.9.0;
 
-interface IVaultComptroller{
-    function getComptrollerOwner() external view returns(address);
+import "contracts/Strategies/Base/IStrategyBase.sol";
 
-    function checkReverseMutex() external view returns(bool);
+interface IVaultComptroller {
+    function getComptrollerOwner() external view returns (address);
+
+    function checkReverseMutex() external view returns (bool);
+
+    function interactWithStrategy(
+        IStrategyBase.ActionType _action,
+        address _vault,
+        address _strategy,
+        uint256 _allowance,
+        bytes calldata _data
+    ) external;
 }

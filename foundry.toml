@@ -1,0 +1,28 @@
+[profile.default]
+src = "contracts"
+out = "artifacts"
+libs = ["node_modules", "lib"]
+remappings = [
+    "@arbitrum/=node_modules/@arbitrum/",
+    "@chainlink/=node_modules/@chainlink/",
+    "@eth-optimism/=node_modules/@chainlink/contracts/node_modules/@eth-optimism/",
+    "@offchainlabs/=node_modules/@offchainlabs/",
+    "@openzeppelin/=node_modules/@openzeppelin/",
+    "@pythnetwork/=node_modules/@pythnetwork/",
+    "@scroll-tech/=node_modules/@scroll-tech/",
+    "@zksync/=node_modules/@zksync/",
+    "hardhat/=node_modules/hardhat/",
+    "solady/=node_modules/solady/",
+]
+libraries = [
+    "contracts/Core/Vault/VaultConfigLib.sol:VaultConfigLib:0x1000000000000000000000000000000000000001"
+]
+
+optimizer = true
+optimizer_runs = 200
+
+via_ir = true
+
+gas_reports = ["VaultComptroller", "Vault", "ValueCalculator", "OraclesAggregator", "ChainLinkPriceFeed", "PythPriceFeed"]
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

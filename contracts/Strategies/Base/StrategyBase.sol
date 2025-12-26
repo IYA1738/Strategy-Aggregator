@@ -10,6 +10,7 @@ abstract contract StrategyBase is StrategyBaseLayout, IStrategyBase {
 
     event TargetProtocolChanged(address prevTargetProtocol, address targetProtocol);
     event ManagerChanged(address prevManager, address manager);
+    event SetAllowedVault(address vault, bool allowed);
 
     error InvalidAction();
 
@@ -20,6 +21,11 @@ abstract contract StrategyBase is StrategyBaseLayout, IStrategyBase {
             msg.sender == IVaultComptroller(COMPTROLLER).getComptrollerOwner(),
             "StrategyBase: caller is not the comptroller owner"
         );
+        _;
+    }
+
+    modifier onlyComptroller() {
+        require(msg.sender == COMPTROLLER, "StrategyBase: caller is not the comptroller");
         _;
     }
 
@@ -48,6 +54,10 @@ abstract contract StrategyBase is StrategyBaseLayout, IStrategyBase {
 
     function handleHarvestFund(address _vault, bytes calldata _data) internal virtual {}
 
+    function calcNav() external view virtual returns (uint256) {}
+
+    function calcGav() external view virtual returns (uint256) {}
+
     function _validateComptrollerCall(address _vault) internal view returns (bool) {
         if (msg.sender != COMPTROLLER) {
             return false;
@@ -68,6 +78,11 @@ abstract contract StrategyBase is StrategyBaseLayout, IStrategyBase {
         address prevManager = getStateSlot().manager;
         getStateSlot().manager = _manager;
         emit ManagerChanged(prevManager, _manager);
+    }
+
+    function setAllowedVault(address _vault, bool _allowed) external onlyComptrollerOwner {
+        getStateSlot().allowedVaults[_vault] = _allowed;
+        emit SetAllowedVault(_vault, _allowed);
     }
 
     function isAllowedVault(address _vault) public view returns (bool) {

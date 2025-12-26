@@ -2,7 +2,7 @@
 pragma solidity >=0.8.0 <0.9.0;
 
 // Vault是不可升级的支持ERC20合约
-// 一个Vault是一个新市场吧
+// 一个Vault是一个新市场
 // 策略是可以选择启用或者不启用的, 所以策略需要可插拔
 // 这个版本的vault做单资产记账模式, 收回的时候可以根据token奖励做Inkind赎回
 import "contracts/Core/Utils/Ownable2Step.sol";
@@ -12,6 +12,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "contracts/Core/Comptroller/IVaultComptroller.sol";
 import "contracts/Core/Comptroller/VaultComptroller.sol";
 import "contracts/Utils/VaultConfigLib.sol";
+import "contracts/Strategies/Base/IStrategyBase.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract Vault is Ownable2Step, ERC20 {
@@ -33,9 +34,9 @@ contract Vault is Ownable2Step, ERC20 {
 
     Parameters internal parameters;
     address internal immutable FEE_RESERVER;
-    address internal immutable FACTORY;
     address internal immutable DENOMINATION_ASSET;
     address internal immutable COMPTROLLER;
+    address internal immutable VAULT_MANAGER;
 
     uint256 internal constant YEAR_SECONDS = 31_557_600; // 365.25 days
 
@@ -60,11 +61,15 @@ contract Vault is Ownable2Step, ERC20 {
     event PauseFlagChanged(bool _value);
     event RegistryStrategy(address _strategy);
     event UnregistryStrategy(address _strategy);
+    event DepositFeeRateBpsChanged(uint16 newValue);
+    event RedeemFeeRateBpsChanged(uint16 newValue);
     event ManagerFeeBpsChanged(uint16 value);
     event ProtocolFeePaid(uint256 _paidTime, uint256 _amount);
+    event ApprovedToStrategy(address indexed _strategy, uint256 _allowance);
 
     error AssetAlreadyTracked(address _asset);
     error AssetIsNotExist(address _asset);
+    error unauthorizedStrategy(address _strategy);
 
     modifier onlyComptroller() {
         require(msg.sender == COMPTROLLER, "Vault: caller is not the comptroller");
@@ -95,14 +100,16 @@ contract Vault is Ownable2Step, ERC20 {
     constructor(
         address _comptroller,
         address _denominationAsset,
-        address _factory,
+        address _vaultManager,
+        address _feeReserver,
         uint256 _delay,
         string memory _name,
         string memory _symbol
     ) ERC20(_name, _symbol) {
         DENOMINATION_ASSET = _denominationAsset;
-        FACTORY = _factory;
+        VAULT_MANAGER = _vaultManager;
         COMPTROLLER = _comptroller;
+        FEE_RESERVER = _feeReserver;
         address owner = IVaultComptroller(COMPTROLLER).getComptrollerOwner();
         __init_Ownable2Step(owner, _delay);
     }
@@ -154,6 +161,7 @@ contract Vault is Ownable2Step, ERC20 {
 
     function registryStreategy(address _strategy) external onlyComptrollerOwner {
         registriedStrategies[_strategy] = true;
+        strategies.push(_strategy);
         emit RegistryStrategy(_strategy);
     }
 
@@ -162,7 +170,7 @@ contract Vault is Ownable2Step, ERC20 {
         emit UnregistryStrategy(_strategy);
     }
 
-    function isRegistryStrategy(address _strategy) external view returns (bool) {
+    function isRegistryStrategy(address _strategy) public view returns (bool) {
         return registriedStrategies[_strategy];
     }
 
@@ -208,6 +216,28 @@ contract Vault is Ownable2Step, ERC20 {
         emit ManagerFeeBpsChanged(value);
     }
 
+    function setDepositFeeRateBps(uint16 value) external onlyComptrollerOwner {
+        parameters.word = parameters.word._setDepositFeeRateBps(value);
+        emit DepositFeeRateBpsChanged(value);
+    }
+
+    function setRedeemFeeRateBps(uint16 value) external onlyComptrollerOwner {
+        parameters.word = parameters.word._setRedeemFeeRateBps(value);
+        emit RedeemFeeRateBpsChanged(value);
+    }
+
+    function approveToStrategy(
+        address _strategy,
+        uint256 _allowance
+    ) external onlyComptroller nonReentrancyGuard {
+        if (!isRegistryStrategy(_strategy)) {
+            revert unauthorizedStrategy(_strategy);
+        }
+        IERC20(DENOMINATION_ASSET).approve(_strategy, 0);
+        IERC20(DENOMINATION_ASSET).approve(_strategy, _allowance);
+        emit ApprovedToStrategy(_strategy, _allowance);
+    }
+
     // ============
 
     function payProtocolFee()
@@ -233,6 +263,10 @@ contract Vault is Ownable2Step, ERC20 {
         return fee;
     }
 
+    function decimals() public pure override returns (uint8) {
+        return 18;
+    }
+
     // ======= Getter =====
 
     function getTrackedAssets() external view returns (address[] memory) {
@@ -253,5 +287,17 @@ contract Vault is Ownable2Step, ERC20 {
 
     function getLastPayoutProtocolFee() external view returns (uint256) {
         return lastPayoutProtocolFee;
+    }
+
+    function getVaultConfig() external view returns (uint256) {
+        return parameters.word;
+    }
+
+    function getVaultManager() external view returns (address) {
+        return VAULT_MANAGER;
+    }
+
+    function getStrategies() external view returns (address[] memory) {
+        return strategies;
     }
 }

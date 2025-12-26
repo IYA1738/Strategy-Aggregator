@@ -17,4 +17,10 @@ interface IVault {
     function isRegistryStrategy(address _strategy) external view returns (bool);
 
     function payProtocolFee() external;
+
+    function getVaultConfig() external view returns (uint256);
+
+    function approveToStrategy(address _strategy, uint256 _allowance) external;
+
+    function getStrategies() external view returns (address[] memory);
 }

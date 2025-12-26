@@ -8,23 +8,31 @@ import "contracts/Core/Utils/Ownable2Step.sol";
 import "contracts/Strategies/Base/IStrategyBase.sol";
 import "contracts/External-Interface/IWETH.sol";
 import "contracts/Fee-Manager/IFeeManager.sol";
+import "contracts/Utils/WadMath.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 // 资金流向是始终从vault直入直出 但是必须经过Comptroller来控制， 在反向锁的受控流程中
 
 contract VaultComptroller is Ownable2Step {
     using Math for uint256;
     using SafeERC20 for IERC20;
+    using WadMath for uint256;
 
     bool internal reverseMutex;
     bool internal reentrancyGuard;
 
+    address internal immutable FEE_RESERVER;
     address internal immutable WETH;
     address internal immutable FEE_MANAGER;
     address internal immutable VALUE_CALCULATOR;
     mapping(address => bool) public isTrackedVault;
+
+    uint256 internal constant WAD = 1e18;
+    uint256 constant VIRTUAL_SHARES = 1e18;
+    uint256 constant VIRTUAL_ASSETS = 1e18;
 
     event Deposited(
         address indexed _vault,
@@ -47,10 +55,13 @@ contract VaultComptroller is Ownable2Step {
         bytes _data
     );
     event PreRedeemInKindHookFailed(bytes _err, address indexed _redeemer, uint256 _shareToRedeem);
+    event AddTrackedVault(address _vault);
+    event RemoveTrackedVault(address _vault);
 
     error VaultNotTracked(address _vault);
     error BadAmount();
 
+    // 反向锁check 带这个modifier的函数才有权操作vault
     modifier allowAction() {
         require(!reverseMutex, "VaultComptroller: action is not allowed");
         reverseMutex = true;
@@ -65,10 +76,17 @@ contract VaultComptroller is Ownable2Step {
         reentrancyGuard = false;
     }
 
-    constructor(address _weth, address _feeManager, address _valueCalculator) {
+    constructor(
+        address _weth,
+        address _feeManager,
+        address _valueCalculator,
+        address _feeReserver
+    ) {
         WETH = _weth;
         FEE_MANAGER = _feeManager;
         VALUE_CALCULATOR = _valueCalculator;
+        FEE_RESERVER = _feeReserver;
+        __init_Ownable2Step(msg.sender, 0);
     }
 
     function checkReverseMutex() external view returns (bool) {
@@ -77,7 +95,7 @@ contract VaultComptroller is Ownable2Step {
 
     // ===== user interaction =====
 
-    function deposit(address _vault, uint256 _amount) external nonReentrancyGuard {
+    function deposit(address _vault, uint256 _amount) external nonReentrancyGuard allowAction {
         if (!isTrackedVault[_vault]) {
             revert VaultNotTracked(_vault);
         }
@@ -94,36 +112,43 @@ contract VaultComptroller is Ownable2Step {
 
     function _preDepositHook(address _vault, uint256 _amount) private returns (uint256, uint256) {
         address denominationAsset = IVault(_vault).getDenominationAsset();
+        if (_amount == 0) revert BadAmount();
 
-        uint256 preChargeFeeBalance = IERC20(denominationAsset).balanceOf(msg.sender);
-        IFeeManager(FEE_MANAGER).invokeHook(
+        uint256 preSupply = IERC20(_vault).totalSupply();
+        uint256 preNavWad = ValueCalculator(VALUE_CALCULATOR).calcNav(_vault); // 返回 1e18(WAD)
+
+        uint256 fee = IFeeManager(FEE_MANAGER).invokeHook(
             IFeeManager.FeeType.DEPOSIT,
-            abi.encode(_vault, msg.sender, _amount)
+            abi.encode(_vault, _amount)
         );
-        uint256 postChargeFeeBalance = IERC20(denominationAsset).balanceOf(msg.sender);
 
-        uint256 fee = postChargeFeeBalance - preChargeFeeBalance; //不会小于0 不存在收费后余额大于收费前余额
+        uint256 actualAmountToken = _amount - fee; // token 原始单位
 
-        uint256 actualAmount = _amount - fee;
+        uint8 dec = IERC20Metadata(denominationAsset).decimals();
+        uint256 actualAmountWad = _toWad(actualAmountToken, dec);
 
         if (denominationAsset != WETH) {
-            IERC20(denominationAsset).safeTransferFrom(msg.sender, _vault, actualAmount);
+            IERC20(denominationAsset).safeTransferFrom(msg.sender, _vault, actualAmountToken);
         } else {
-            IERC20(WETH).safeTransfer(_vault, actualAmount);
+            IERC20(WETH).safeTransfer(_vault, actualAmountToken);
         }
 
-        uint256 nav = 100000; //ValueCalculator(VALUE_CALCULATOR).calcNav(_vault); 先测试一下
+        uint256 sharesToMint;
 
-        // uint256 scale = 10 ** (18 - IERC20(denominationAsset).decimals());
-
-        uint256 totalSupply = IERC20(_vault).totalSupply();
-
-        // Shares / Supply = (amount / NAV)
-        // Shares = Supply * amount / NAV
-        if (totalSupply == 0) {
-            return (actualAmount, fee);
-        }
-        uint256 sharesToMint = actualAmount.mulDiv(totalSupply, nav, Math.Rounding.Floor);
+        // Shares = amountWad * preSupply / preNavWad
+        // （等价于 amount / (NAV/Supply)）
+        sharesToMint = actualAmountWad.mulDiv(
+            preSupply + VIRTUAL_SHARES,
+            preNavWad + VIRTUAL_ASSETS,
+            Math.Rounding.Floor
+        );
+        fee = fee._toWad(IERC20Metadata(denominationAsset).decimals());
+        uint256 feeToMint = fee.mulDiv(
+            preSupply + VIRTUAL_SHARES,
+            preNavWad + VIRTUAL_ASSETS,
+            Math.Rounding.Floor
+        );
+        IVault(_vault).mintShare(FEE_RESERVER, feeToMint);
 
         return (sharesToMint, fee);
     }
@@ -132,7 +157,7 @@ contract VaultComptroller is Ownable2Step {
         address _recipient,
         address _vault,
         uint256 _sharesQuantity
-    ) external nonReentrancyGuard {
+    ) external nonReentrancyGuard allowAction {
         (uint256 sharesToRedeem, uint256 shareSupply) = _preRedeemInKindHookSetUp(
             msg.sender,
             _vault,
@@ -176,8 +201,8 @@ contract VaultComptroller is Ownable2Step {
 
         if (_sharesQuantity == type(uint256).max) {
             sharesToRedeem_ = postFeesRedeemerSharesBalance;
-        } else if (postFeesRedeemerSharesBalance >= preFeesRedeemerSharesBalance) {
-            sharesToRedeem_ -= postFeesRedeemerSharesBalance - preFeesRedeemerSharesBalance;
+        } else if (postFeesRedeemerSharesBalance <= preFeesRedeemerSharesBalance) {
+            sharesToRedeem_ -= preFeesRedeemerSharesBalance - postFeesRedeemerSharesBalance;
         } //不存在扣完费后还大于等于的情况
 
         IVault(_vault).burnShare(msg.sender, sharesToRedeem_);
@@ -191,15 +216,12 @@ contract VaultComptroller is Ownable2Step {
         uint256 _shareToRedeem
     ) private {
         IVault(_vault).payProtocolFee();
-        try
-            IFeeManager(getFeeManager()).invokeHook(
-                IFeeManager.FeeType.REDEEM,
-                abi.encode(_vault, _redeemer, _shareToRedeem)
-            )
-        {} // emit这次错误 官方承担Fee Manager问题导致的没收到这次手续费 // 考虑用户体验 因此不应该协议没有收到费用就导致提现失败 // Catch Fee Manager revert， 因为不回滚所有状态
-        catch (bytes memory err) {
-            emit PreRedeemInKindHookFailed(err, _redeemer, _shareToRedeem);
-        }
+        uint256 fee = IFeeManager(getFeeManager()).invokeHook(
+            IFeeManager.FeeType.REDEEM,
+            abi.encode(_vault, _shareToRedeem)
+        );
+        IVault(_vault).burnShare(_redeemer, fee);
+        IVault(_vault).mintShare(FEE_RESERVER, fee);
     }
 
     // ===== Interaction with strategies =====
@@ -208,12 +230,16 @@ contract VaultComptroller is Ownable2Step {
         IStrategyBase.ActionType _action,
         address _vault,
         address _strategy,
+        uint256 _allowance,
         bytes calldata _data
-    ) external nonReentrancyGuard {
+    ) external allowAction nonReentrancyGuard {
         require(
             _validateManagerAction(_vault, _strategy),
             "VaultComptroller: caller is not the vault manager"
         );
+        if (_action == IStrategyBase.ActionType.DEPLOY_FUND) {
+            IVault(_vault).approveToStrategy(_strategy, _allowance);
+        }
         IStrategyBase(_strategy).receiveActionFromComptroller(_action, _vault, _data);
         emit StrategyInteraction(_vault, _strategy, _action, _data);
     }
@@ -222,18 +248,39 @@ contract VaultComptroller is Ownable2Step {
         address _vault,
         address _strategy
     ) internal view returns (bool) {
-        bool isVaultManager = IVault(_vault).getVaultManager() == address(this);
+        bool isVaultManager = IVault(_vault).getVaultManager() == msg.sender;
         bool isRegistryStrategy = IVault(_vault).isRegistryStrategy(_strategy);
         bool isRegistryVault = isTrackedVault[_vault];
         return isVaultManager && isRegistryStrategy && isRegistryVault;
     }
 
     function getComptrollerOwner() public view returns (address) {
-        return super.getOwner();
+        return getOwner();
     }
 
     function getFeeManager() public view returns (address) {
         return FEE_MANAGER;
+    }
+
+    function addTrackedVault(address _vault) external onlyOwner {
+        isTrackedVault[_vault] = true;
+        emit AddTrackedVault(_vault);
+    }
+
+    function removeTrackedVault(address _vault) external onlyOwner {
+        isTrackedVault[_vault] = false;
+        emit RemoveTrackedVault(_vault);
+    }
+
+    function _toWad(uint256 _amountRaw, uint8 _tokenDecimals) internal pure returns (uint256) {
+        if (_tokenDecimals == 18) {
+            return _amountRaw;
+        } else if (_tokenDecimals < 18) {
+            return _amountRaw * 10 ** (18 - _tokenDecimals);
+        } else {
+            uint256 scale = 10 ** (_tokenDecimals - 18);
+            return _amountRaw / scale; //必定整除不会丢失精度
+        }
     }
 
     receive() external payable {
