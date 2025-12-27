@@ -155,13 +155,9 @@ contract VaultAaveV3IntegrationFlowTest is VaultTestBase {
 
         uint256 t1 = block.timestamp;
 
-        // ====== 再前进 100 天 ======
         vm.warp(block.timestamp + 100 days);
         vm.roll(block.number + 300_000);
 
-        // =========================
-        // T2: user3 deposit + push
-        // =========================
         vm.startPrank(user3);
         IERC20(USDC).approve(address(comptroller), type(uint256).max);
         comptroller.deposit(address(vault), amt3);

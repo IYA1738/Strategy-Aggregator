@@ -15,6 +15,7 @@ import "contracts/Infrastructure/price-feeds/pyth/PythPriceFeed.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "contracts/Fee-Reserver/FeeReserver.sol";
+import "forge-std/console2.sol";
 
 abstract contract VaultTestBase is Test {
     address constant USD = address(0);
@@ -53,7 +54,7 @@ abstract contract VaultTestBase is Test {
 
     function setUp() public virtual {
         uint256 forkBlock = 39000000;
-        string memory RPC = "https://base-mainnet.infura.io/v3/c8b8880b688449e098c268f568bf7700"; //上传github前要删掉
+        string memory RPC = ""; //上传github前要删掉
         vm.createSelectFork(RPC, forkBlock);
 
         bytes memory libCode = vm.getCode("VaultConfigLib.sol:VaultConfigLib");

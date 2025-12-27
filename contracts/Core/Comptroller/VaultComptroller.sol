@@ -21,8 +21,11 @@ contract VaultComptroller is Ownable2Step {
     using SafeERC20 for IERC20;
     using WadMath for uint256;
 
-    bool internal reverseMutex;
-    bool internal reentrancyGuard;
+    bool private reverseMutex;
+
+    uint8 private reentrancyStatus;
+    uint8 private constant REENTRANCY_NOT_ENTERED = 1;
+    uint8 private constant REENTRANCY_ENTERED = 2;
 
     address internal immutable FEE_RESERVER;
     address internal immutable WETH;
@@ -60,6 +63,7 @@ contract VaultComptroller is Ownable2Step {
 
     error VaultNotTracked(address _vault);
     error BadAmount();
+    error ReentrancyLock();
 
     // 反向锁check 带这个modifier的函数才有权操作vault
     modifier allowAction() {
@@ -69,11 +73,17 @@ contract VaultComptroller is Ownable2Step {
         reverseMutex = false;
     }
 
+    function _checkReentrancy() private view {
+        if (reentrancyStatus == REENTRANCY_ENTERED) {
+            revert ReentrancyLock();
+        }
+    }
+
     modifier nonReentrancyGuard() {
-        require(!reentrancyGuard, "VaultComptroller: reentrancy is not allowed");
-        reentrancyGuard = true;
+        _checkReentrancy();
+        reentrancyStatus = REENTRANCY_ENTERED;
         _;
-        reentrancyGuard = false;
+        reentrancyStatus = REENTRANCY_NOT_ENTERED;
     }
 
     constructor(
@@ -87,6 +97,7 @@ contract VaultComptroller is Ownable2Step {
         VALUE_CALCULATOR = _valueCalculator;
         FEE_RESERVER = _feeReserver;
         __init_Ownable2Step(msg.sender, 0);
+        reentrancyStatus = REENTRANCY_NOT_ENTERED;
     }
 
     function checkReverseMutex() external view returns (bool) {
@@ -186,6 +197,7 @@ contract VaultComptroller is Ownable2Step {
         address _vault,
         uint256 _sharesQuantity
     ) private returns (uint256 sharesToRedeem_, uint256 shareSupply_) {
+        IVault(_vault).payProtocolFee();
         uint256 shareSupply = IERC20(_vault).totalSupply();
         uint256 preFeesRedeemerSharesBalance = IERC20(_vault).balanceOf(_redeemer);
 
@@ -215,7 +227,6 @@ contract VaultComptroller is Ownable2Step {
         address _redeemer,
         uint256 _shareToRedeem
     ) private {
-        IVault(_vault).payProtocolFee();
         uint256 fee = IFeeManager(getFeeManager()).invokeHook(
             IFeeManager.FeeType.REDEEM,
             abi.encode(_vault, _shareToRedeem)

@@ -52,7 +52,7 @@ contract VaultFlowTest is Test {
     FeeReserver feeReserver;
 
     function setUp() external {
-        string memory RPC = "https://base-mainnet.infura.io/v3/c8b8880b688449e098c268f568bf7700"; //上传github前要删掉
+        string memory RPC = ""; //上传github前要删掉
         vm.createSelectFork(RPC);
 
         bytes memory libCode = vm.getCode("VaultConfigLib.sol:VaultConfigLib");

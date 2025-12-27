@@ -80,4 +80,8 @@ contract AaveV3LenderUSDC is StrategyBase {
         uint256 price = IOraclesAggregator(ORACLE_AGGREGATOR).getPrice(USDC, address(0));
         return valueWadBaseAsset.mulDiv(price, 1e18);
     }
+
+    function strategySupportAsset() public view override returns (address) {
+        return USDC;
+    }
 }

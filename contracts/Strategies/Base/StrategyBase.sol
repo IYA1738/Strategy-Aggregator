@@ -4,6 +4,7 @@ pragma solidity >=0.8.0 <0.9.0;
 import "contracts/Strategies/Base/IStrategyBase.sol";
 import "contracts/Core/Comptroller/IVaultComptroller.sol";
 import "contracts/Strategies/Base/StrategyBaseLayout.sol";
+import "contracts/Core/Vault/IVault.sol";
 
 abstract contract StrategyBase is StrategyBaseLayout, IStrategyBase {
     address internal immutable COMPTROLLER;
@@ -58,6 +59,8 @@ abstract contract StrategyBase is StrategyBaseLayout, IStrategyBase {
 
     function calcGav() external view virtual returns (uint256) {}
 
+    function strategySupportAsset() public view virtual returns (address) {}
+
     function _validateComptrollerCall(address _vault) internal view returns (bool) {
         if (msg.sender != COMPTROLLER) {
             return false;
@@ -65,6 +68,10 @@ abstract contract StrategyBase is StrategyBaseLayout, IStrategyBase {
         if (!isAllowedVault(_vault)) {
             return false;
         }
+        if (IVault(_vault).getDenominationAsset() != strategySupportAsset()) {
+            return false;
+        }
+
         return true;
     }
 
